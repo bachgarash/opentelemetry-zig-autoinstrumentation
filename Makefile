@@ -19,9 +19,13 @@ BINS    := $(foreach m,$(MODES),$(OUT)/$(NAME)-$(m))
 
 .PHONY: debug safe fast small all run syms dwarf modes clean help
 
+## debug: build with -O Debug (keeps symbols + DWARF)
 debug: $(OUT)/$(NAME)-Debug
+## safe:  build with -O ReleaseSafe
 safe:  $(OUT)/$(NAME)-ReleaseSafe
+## fast:  build with -O ReleaseFast
 fast:  $(OUT)/$(NAME)-ReleaseFast
+## small: build with -O ReleaseSmall (stripped)
 small: $(OUT)/$(NAME)-ReleaseSmall
 
 ## all: build every optimisation mode side by side
@@ -52,8 +56,10 @@ dwarf: debug
 modes: all
 > @ls -l $(BINS) | awk '{ printf "%-40s %10d bytes\n", $$9, $$5 }'
 
+## clean: remove build outputs and the zig cache
 clean:
 > rm -rf $(OUT) .zig-cache
 
+## help:  this list
 help:
 > @grep -E '^## ' $(MAKEFILE_LIST) | sed 's/^## /  /'
