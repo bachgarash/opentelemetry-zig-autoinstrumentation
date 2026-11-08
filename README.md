@@ -24,8 +24,9 @@ you none of that.
   releases. Arguments do not reliably land in the SysV registers.
 - **No runtime to anchor to.** No scheduler, no goroutine IDs, no `g` pointer to
   hang trace context off.
-- **Aggressive inlining.** Non-`pub` functions frequently disappear entirely in
-  release builds, taking their symbols with them.
+- **Aggressive inlining.** Non-`pub` functions routinely vanish from the symbol
+  table in release builds. DWARF still records where their code landed, so they
+  stay reachable — but only by address, never by name.
 - **DWARF is the only map.** Which means release builds without debug info are a
   genuinely open problem, not an implementation detail.
 
@@ -73,6 +74,37 @@ Zig 0.16.0, x86-64, kernel 7.2.15, not assumed.
 
 The symbol is local (`t`, `DW_AT_external: 0`), not global. Uprobes don't care
 about binding, but anything resolving symbols by dynamic-symbol lookup will.
+
+### A missing symbol is not a dead end
+
+`handleRequest` disappears from `nm` in ReleaseFast because it was **inlined**,
+not because the information was discarded. Zig does not strip in
+ReleaseSafe/ReleaseFast — that build still carries 8 debug sections, and DWARF
+records the inlined code's location:
+
+```
+DW_TAG_subprogram                     ← abstract root, no address
+  DW_AT_name   : handleRequest
+  DW_AT_inline : 1 (inlined)
+
+DW_TAG_inlined_subroutine             ← concrete instance
+  DW_AT_abstract_origin: <0xca89>
+  DW_AT_ranges         : 0x1490
+  DW_AT_call_line      : 51           ← the call site in serveConnection
+```
+
+Range list `0x1490` resolves to four discontiguous spans, the first at
+`0x101ec7a`. A uprobe placed there fires when the inlined body is entered.
+
+The cost is threefold: no symbol, so attachment is by computed offset only; no
+stack frame of its own, so parameters must be read from `.debug_loc` location
+lists that vary by PC range; and fragmented ranges, so "function entry" becomes
+a judgement call. More loader work, not a different problem.
+
+**ReleaseSmall and `-fstrip` are the real dead end** — zero debug sections, no
+symbol table, nothing to attach to. Those need a socket-level fallback
+(tracepoints on the syscalls the process makes, parsing HTTP off the wire),
+which trades handler-level attribution for surviving any amount of stripping.
 
 ### DWARF gives full argument detail
 
@@ -151,9 +183,15 @@ the `DW_TAG_lo_user` range and binutils loses its place. The data is fine; use
 
 ### Target support
 
-- [x] Debug builds — symbols and DWARF present
-- [ ] ReleaseSafe / ReleaseFast — symbol gone, function inlined
-- [ ] ReleaseSmall — fully stripped
+Three tiers, by how much the compiler left behind:
+
+- [x] **Debug** — symbol + `DW_AT_location`; attach by name
+- [ ] **ReleaseSafe / ReleaseFast** — no symbol, but DWARF inlined ranges and
+      location lists; attach by computed offset
+- [ ] **ReleaseSmall / `-fstrip`** — nothing; needs the socket-level fallback
+
+Plus, orthogonal to the tiers:
+
 - [ ] PIE binaries (load-address slide)
 - [ ] Multi-threaded servers and concurrent connections
 - [ ] More than one Zig version (internal ABI is unstable)
@@ -164,6 +202,8 @@ the `DW_TAG_lo_user` range and binutils loses its place. The data is fine; use
 - [x] Build in all four optimisation modes side by side
 - [x] Symbol and DWARF inspection targets
 - [ ] eBPF program and userspace loader
+- [ ] DWARF reader: inlined ranges and `.debug_loc` location lists
+- [ ] Socket-level fallback for stripped binaries
 - [ ] Integration test asserting spans reach a collector
 
 Not planned for now: non-x86-64 architectures, anything async.
